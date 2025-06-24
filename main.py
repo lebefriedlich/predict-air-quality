@@ -4,6 +4,29 @@ from sklearn.decomposition import PCA
 from sklearn.svm import SVC, SVR
 import numpy as np
 from datetime import datetime, timedelta
+import logging
+from logging.handlers import TimedRotatingFileHandler
+import os
+
+# Buat folder logs jika belum ada
+if not os.path.exists("logs"):
+    os.makedirs("logs")
+
+# Setup logger dengan rotasi harian
+logger = logging.getLogger("flask_logger")
+logger.setLevel(logging.INFO)
+
+handler = TimedRotatingFileHandler(
+    filename="logs/flask_app.log",
+    when="midnight",           # Rotasi setiap tengah malam
+    interval=1,
+    backupCount=7,             # Simpan maksimal 7 file log lama
+    encoding="utf-8"
+)
+
+formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', '%Y-%m-%d %H:%M:%S')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 app = Flask(__name__)
 
@@ -20,57 +43,69 @@ def categorize(pm25: float) -> str:
         return "Berbahaya"
 
 def predict_region(region: dict):
+    logger.info("Memproses region: %s", region.get('id'))
+
     iaqi_data = [i for i in region['iaqi'] if i.get('pm25') is not None]
     if len(iaqi_data) < 5:
+        logger.warning("Region %s memiliki data kurang dari 5, dilewati.", region.get('id'))
         return {
             "region_id": region['id'],
             "error": "Data tidak cukup"
         }
 
-    X = [[d['pm25'], d['t'], d['h'], d['p'], d['w'], d['dew']] for d in iaqi_data]
-    y_class = [categorize(d['pm25']) for d in iaqi_data]
-    y_reg = [d['pm25'] for d in iaqi_data]
+    try:
+        X = [[d['pm25'], d['t'], d['h'], d['p'], d['w'], d['dew']] for d in iaqi_data]
+        y_class = [categorize(d['pm25']) for d in iaqi_data]
+        y_reg = [d['pm25'] for d in iaqi_data]
 
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    pca = PCA(n_components=2)
-    X_pca = pca.fit_transform(X_scaled)
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        pca = PCA(n_components=2)
+        X_pca = pca.fit_transform(X_scaled)
 
-    clf = SVC(kernel='rbf')
-    clf.fit(X_pca, y_class)
+        clf = SVC(kernel='rbf')
+        clf.fit(X_pca, y_class)
 
-    reg = SVR(kernel='rbf')
-    reg.fit(X_pca, y_reg)
+        reg = SVR(kernel='rbf')
+        reg.fit(X_pca, y_reg)
 
-    base_date = datetime.strptime(region['date_now'], "%Y-%m-%d")
-    last = iaqi_data[-1]
-    base_input = np.array([[last['pm25'], last['t'], last['h'], last['p'], last['w'], last['dew']]])
+        base_date = datetime.strptime(region['date_now'], "%Y-%m-%d")
+        last = iaqi_data[-1]
+        base_input = np.array([[last['pm25'], last['t'], last['h'], last['p'], last['w'], last['dew']]])
 
-    predictions = []
-    for day_offset in range(1, 4):
-        pred_date = base_date + timedelta(days=day_offset)
+        predictions = []
+        for day_offset in range(1, 4):
+            pred_date = base_date + timedelta(days=day_offset)
 
-        modified_input = base_input.copy()
-        modified_input[0][1] += 0.5 * day_offset
-        modified_input[0][4] += 0.2 * day_offset
-        modified_input[0][5] += 0.3 * day_offset
+            modified_input = base_input.copy()
+            modified_input[0][1] += 0.5 * day_offset
+            modified_input[0][4] += 0.2 * day_offset
+            modified_input[0][5] += 0.3 * day_offset
 
-        X_scaled_day = scaler.transform(modified_input)
-        X_pca_day = pca.transform(X_scaled_day)
+            X_scaled_day = scaler.transform(modified_input)
+            X_pca_day = pca.transform(X_scaled_day)
 
-        pred_aqi = reg.predict(X_pca_day)[0]
-        pred_class = clf.predict(X_pca_day)[0]
+            pred_aqi = reg.predict(X_pca_day)[0]
+            pred_class = clf.predict(X_pca_day)[0]
 
-        predictions.append({
-            "date": pred_date.strftime("%Y-%m-%d"),
-            "predicted_aqi": round(pred_aqi, 2),
-            "predicted_category": pred_class
-        })
+            predictions.append({
+                "date": pred_date.strftime("%Y-%m-%d"),
+                "predicted_aqi": round(pred_aqi, 2),
+                "predicted_category": pred_class
+            })
 
-    return {
-        "region_id": region['id'],
-        "predictions": predictions
-    }
+        logger.info("Prediksi selesai untuk region %s", region['id'])
+        return {
+            "region_id": region['id'],
+            "predictions": predictions
+        }
+
+    except Exception as e:
+        logger.exception("Terjadi kesalahan saat memproses region %s: %s", region.get('id'), str(e))
+        return {
+            "region_id": region.get('id'),
+            "error": "Terjadi kesalahan saat prediksi"
+        }
 
 @app.route("/")
 def index():
@@ -79,5 +114,12 @@ def index():
 @app.route("/predict-multiple-regions", methods=["POST"])
 def predict_multiple_regions():
     data = request.get_json()
+    logger.info("Request prediksi diterima, total region: %d", len(data) if data else 0)
+
+    if not data or not isinstance(data, list):
+        logger.warning("Data request kosong atau format tidak sesuai.")
+        return jsonify({"error": "Data tidak valid"}), 400
+
     results = [predict_region(region) for region in data]
+    logger.info("Prediksi selesai untuk semua region.")
     return jsonify(results)

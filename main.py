@@ -12,25 +12,33 @@ import os
 if not os.path.exists("logs"):
     os.makedirs("logs")
 
-# Setup logger dengan rotasi harian
+# Setup logger
 logger = logging.getLogger("flask_logger")
 logger.setLevel(logging.INFO)
-
 handler = TimedRotatingFileHandler(
     filename="logs/flask_app.log",
-    when="midnight",           # Rotasi setiap tengah malam
+    when="midnight",
     interval=1,
-    backupCount=7,             # Simpan maksimal 7 file log lama
+    backupCount=7,
     encoding="utf-8"
 )
-
 formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', '%Y-%m-%d %H:%M:%S')
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 app = Flask(__name__)
 
-def categorize(pm25: float) -> str:
+def safe_float(val):
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+def categorize(pm25) -> str:
+    pm25 = safe_float(pm25)
+    if pm25 is None:
+        return "Tidak Diketahui"
+
     if pm25 <= 50:
         return "Baik"
     elif pm25 <= 100:
@@ -45,16 +53,28 @@ def categorize(pm25: float) -> str:
 def predict_region(region: dict):
     logger.info("Memproses region: %s", region.get('id'))
 
-    iaqi_data = [i for i in region['iaqi'] if i.get('pm25') is not None]
+    iaqi_data = [
+        {
+            'pm25': safe_float(d.get('pm25')),
+            't': safe_float(d.get('t')),
+            'h': safe_float(d.get('h')),
+            'p': safe_float(d.get('p')),
+            'w': safe_float(d.get('w')),
+            'dew': safe_float(d.get('dew'))
+        }
+        for d in region.get('iaqi', [])
+        if safe_float(d.get('pm25')) is not None
+    ]
+
     if len(iaqi_data) < 5:
         logger.warning("Region %s memiliki data kurang dari 5, dilewati.", region.get('id'))
-        return {
-            "region_id": region['id'],
-            "error": "Data tidak cukup"
-        }
+        return {"region_id": region.get('id'), "error": "Data tidak cukup"}
 
     try:
         X = [[d['pm25'], d['t'], d['h'], d['p'], d['w'], d['dew']] for d in iaqi_data]
+        if any(None in row for row in X):
+            raise ValueError("Terdapat nilai None dalam data fitur.")
+
         y_class = [categorize(d['pm25']) for d in iaqi_data]
         y_reg = [d['pm25'] for d in iaqi_data]
 
@@ -95,17 +115,11 @@ def predict_region(region: dict):
             })
 
         logger.info("Prediksi selesai untuk region %s", region['id'])
-        return {
-            "region_id": region['id'],
-            "predictions": predictions
-        }
+        return {"region_id": region['id'], "predictions": predictions}
 
     except Exception as e:
         logger.exception("Terjadi kesalahan saat memproses region %s: %s", region.get('id'), str(e))
-        return {
-            "region_id": region.get('id'),
-            "error": "Terjadi kesalahan saat prediksi"
-        }
+        return {"region_id": region.get('id'), "error": "Terjadi kesalahan saat prediksi"}
 
 @app.route("/")
 def index():

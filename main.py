@@ -55,9 +55,9 @@ def evaluate_model(X, y_class, y_reg):
     try:
         logger.info("Memulai evaluasi model...")
 
-        # Split data
-        X_train, X_test, y_train_class, y_test_class = train_test_split(X, y_class, test_size=0.2, random_state=42)
-        _, _, y_train_reg, y_test_reg = train_test_split(X, y_reg, test_size=0.2, random_state=42)
+        X_train, X_test, y_train_class, y_test_class, y_train_reg, y_test_reg = train_test_split(
+            X, y_class, y_reg, test_size=0.2, random_state=42
+        )
 
         # Model klasifikasi
         clf = SVC(kernel='rbf')
@@ -76,8 +76,11 @@ def evaluate_model(X, y_class, y_reg):
         logger.info("RMSE regresi: %.4f", rmse)
         logger.info("R² regresi: %.4f", r2)
 
+        return clf, reg
+
     except Exception as e:
         logger.exception("Gagal evaluasi model: %s", str(e))
+        return None, None
 
 def predict_region(region: dict):
     logger.info("Memproses region: %s", region.get('id'))
@@ -112,14 +115,9 @@ def predict_region(region: dict):
         pca = PCA(n_components=2)
         X_pca = pca.fit_transform(X_scaled)
 
-        # Optional: aktifkan ini untuk evaluasi model
-        evaluate_model(X_pca, y_class, y_reg)
-
-        clf = SVC(kernel='rbf')
-        clf.fit(X_pca, y_class)
-
-        reg = SVR(kernel='rbf')
-        reg.fit(X_pca, y_reg)
+        clf, reg = evaluate_model(X_pca, y_class, y_reg)
+        if clf is None or reg is None:
+            raise ValueError("Gagal evaluasi model")
 
         base_date = datetime.strptime(region['date_now'], "%Y-%m-%d")
         last = iaqi_data[-1]

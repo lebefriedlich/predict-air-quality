@@ -169,6 +169,3 @@ def predict_multiple_regions():
     results = [predict_region(region) for region in data]
     logger.info("Prediksi selesai untuk semua region.")
     return jsonify(results)
-
-if __name__ == "__main__":
-    app.run(debug=True)

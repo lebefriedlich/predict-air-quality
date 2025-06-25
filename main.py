@@ -2,6 +2,8 @@ from flask import Flask, request, jsonify
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.svm import SVC, SVR
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, accuracy_score, mean_squared_error, r2_score
 import numpy as np
 from datetime import datetime, timedelta
 import logging
@@ -38,7 +40,6 @@ def categorize(pm25) -> str:
     pm25 = safe_float(pm25)
     if pm25 is None:
         return "Tidak Diketahui"
-
     if pm25 <= 50:
         return "Baik"
     elif pm25 <= 100:
@@ -49,6 +50,34 @@ def categorize(pm25) -> str:
         return "Sangat Tidak Sehat"
     else:
         return "Berbahaya"
+
+def evaluate_model(X, y_class, y_reg):
+    try:
+        logger.info("Memulai evaluasi model...")
+
+        # Split data
+        X_train, X_test, y_train_class, y_test_class = train_test_split(X, y_class, test_size=0.2, random_state=42)
+        _, _, y_train_reg, y_test_reg = train_test_split(X, y_reg, test_size=0.2, random_state=42)
+
+        # Model klasifikasi
+        clf = SVC(kernel='rbf')
+        clf.fit(X_train, y_train_class)
+        y_pred_class = clf.predict(X_test)
+        acc = accuracy_score(y_test_class, y_pred_class)
+        logger.info("Akurasi klasifikasi: %.2f%%", acc * 100)
+        logger.info("Laporan klasifikasi:\n%s", classification_report(y_test_class, y_pred_class))
+
+        # Model regresi
+        reg = SVR(kernel='rbf')
+        reg.fit(X_train, y_train_reg)
+        y_pred_reg = reg.predict(X_test)
+        rmse = mean_squared_error(y_test_reg, y_pred_reg, squared=False)
+        r2 = r2_score(y_test_reg, y_pred_reg)
+        logger.info("RMSE regresi: %.4f", rmse)
+        logger.info("R² regresi: %.4f", r2)
+
+    except Exception as e:
+        logger.exception("Gagal evaluasi model: %s", str(e))
 
 def predict_region(region: dict):
     logger.info("Memproses region: %s", region.get('id'))
@@ -82,6 +111,9 @@ def predict_region(region: dict):
         X_scaled = scaler.fit_transform(X)
         pca = PCA(n_components=2)
         X_pca = pca.fit_transform(X_scaled)
+
+        # Optional: aktifkan ini untuk evaluasi model
+        evaluate_model(X_pca, y_class, y_reg)
 
         clf = SVC(kernel='rbf')
         clf.fit(X_pca, y_class)
@@ -137,3 +169,6 @@ def predict_multiple_regions():
     results = [predict_region(region) for region in data]
     logger.info("Prediksi selesai untuk semua region.")
     return jsonify(results)
+
+if __name__ == "__main__":
+    app.run(debug=True)

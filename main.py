@@ -83,7 +83,7 @@ def evaluate_model(X, y_class, y_reg):
         return None, None
 
 def predict_region(region: dict):
-    logger.info("Memproses region: %s", region.get('id'))
+    logger.info("Memproses region: %s", region.get('name'))
 
     iaqi_data = [
         {
@@ -99,8 +99,8 @@ def predict_region(region: dict):
     ]
 
     if len(iaqi_data) < 5:
-        logger.warning("Region %s memiliki data kurang dari 5, dilewati.", region.get('id'))
-        return {"region_id": region.get('id'), "error": "Data tidak cukup"}
+        logger.warning("Region %s memiliki data kurang dari 5, dilewati.", region.get('name'))
+        return {"region_id": region.get('name'), "error": "Data tidak cukup"}
 
     try:
         X = [[d['pm25'], d['t'], d['h'], d['p'], d['w'], d['dew']] for d in iaqi_data]
@@ -144,12 +144,12 @@ def predict_region(region: dict):
                 "predicted_category": pred_class
             })
 
-        logger.info("Prediksi selesai untuk region %s", region['id'])
-        return {"region_id": region['id'], "predictions": predictions}
+        logger.info("Prediksi selesai untuk region %s", region['name'])
+        return {"region_id": region['name'], "predictions": predictions}
 
     except Exception as e:
-        logger.exception("Terjadi kesalahan saat memproses region %s: %s", region.get('id'), str(e))
-        return {"region_id": region.get('id'), "error": "Terjadi kesalahan saat prediksi"}
+        logger.exception("Terjadi kesalahan saat memproses region %s: %s", region.get('name'), str(e))
+        return {"region_id": region.get('name'), "error": "Terjadi kesalahan saat prediksi"}
 
 @app.route("/")
 def index():

@@ -100,7 +100,7 @@ def predict_region(region: dict):
 
     if len(iaqi_data) < 5:
         logger.warning("Region %s memiliki data kurang dari 5, dilewati.", region.get('name'))
-        return {"region_id": region.get('name'), "error": "Data tidak cukup"}
+        return {"Region": region.get('name'), "error": "Data tidak cukup"}
 
     try:
         X = [[d['pm25'], d['t'], d['h'], d['p'], d['w'], d['dew']] for d in iaqi_data]
@@ -145,11 +145,11 @@ def predict_region(region: dict):
             })
 
         logger.info("Prediksi selesai untuk region %s", region['name'])
-        return {"region_id": region['name'], "predictions": predictions}
+        return {"region_id": region['id'], "predictions": predictions}
 
     except Exception as e:
         logger.exception("Terjadi kesalahan saat memproses region %s: %s", region.get('name'), str(e))
-        return {"region_id": region.get('name'), "error": "Terjadi kesalahan saat prediksi"}
+        return {"region_id": region.get('id'), "error": "Terjadi kesalahan saat prediksi"}
 
 @app.route("/")
 def index():

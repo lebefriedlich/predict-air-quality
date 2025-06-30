@@ -97,6 +97,8 @@ def predict_region(region: dict):
         for d in region.get('iaqi', [])
         if safe_float(d.get('pm25')) is not None
     ]
+    
+    logger.info("Total data valid untuk region %s: %d", region.get('name'), len(iaqi_data))
 
     if len(iaqi_data) < 5:
         logger.warning("Region %s memiliki data kurang dari 5, dilewati.", region.get('name'))

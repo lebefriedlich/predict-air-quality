@@ -1,9 +1,9 @@
 from flask import Flask, request, jsonify
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-from sklearn.svm import SVC, SVR
+from sklearn.svm import SVR
 from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.metrics import classification_report, accuracy_score, mean_squared_error, r2_score
+from sklearn.metrics import mean_squared_error, r2_score
 import numpy as np
 from datetime import datetime, timedelta
 import logging
@@ -62,38 +62,28 @@ def tune_svr(X, y):
     logger.info("Best SVR params: %s", grid.best_params_)
     return grid.best_estimator_
 
-def evaluate_model(X, y_class, y_reg):
+def evaluate_model(X, y):
     try:
         logger.info("Memulai evaluasi model...")
 
-        X_train, X_test, y_train_class, y_test_class, y_train_reg, y_test_reg = train_test_split(
-            X, y_class, y_reg, test_size=0.2, random_state=42
-        )
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        # Model klasifikasi
-        clf = SVC(kernel='rbf', class_weight='balanced')
-        clf.fit(X_train, y_train_class)
-        y_pred_class = clf.predict(X_test)
-        acc = accuracy_score(y_test_class, y_pred_class)
-        logger.info("Akurasi klasifikasi: %.2f%%", acc * 100)
-        logger.info("Laporan klasifikasi:\n%s", classification_report(y_test_class, y_pred_class))
+        reg = tune_svr(X_train, y_train)
+        y_pred = reg.predict(X_test)
+        rmse = mean_squared_error(y_test, y_pred, squared=False)
+        r2 = r2_score(y_test, y_pred)
 
-        # Model regresi dengan tuning
-        reg = tune_svr(X_train, y_train_reg)
-        y_pred_reg = reg.predict(X_test)
-        rmse = mean_squared_error(y_test_reg, y_pred_reg, squared=False)
-        r2 = r2_score(y_test_reg, y_pred_reg)
         logger.info("RMSE regresi: %.4f", rmse)
         logger.info("R² regresi: %.4f", r2)
 
         if r2 < 0.1:
             logger.warning("Model regresi R² terlalu rendah, prediksi mungkin tidak akurat.")
 
-        return clf, reg
+        return reg
 
     except Exception as e:
         logger.exception("Gagal evaluasi model: %s", str(e))
-        return None, None
+        return None
 
 def predict_region(region: dict):
     logger.info("Memproses region: %s", region.get('name'))
@@ -122,17 +112,16 @@ def predict_region(region: dict):
         if any(None in row for row in X):
             raise ValueError("Terdapat nilai None dalam data fitur.")
 
-        y_class = [categorize(d['pm25']) for d in iaqi_data]
-        y_reg = [d['pm25'] for d in iaqi_data]
+        y = [d['pm25'] for d in iaqi_data]
 
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
-        pca = PCA(n_components=0.95)  # Menyimpan 95% informasi
+        pca = PCA(n_components=0.95)
         X_pca = pca.fit_transform(X_scaled)
         logger.info("Total explained variance by PCA: %.2f%%", pca.explained_variance_ratio_.sum() * 100)
 
-        clf, reg = evaluate_model(X_pca, y_class, y_reg)
-        if clf is None or reg is None:
+        reg = evaluate_model(X_pca, y)
+        if reg is None:
             raise ValueError("Gagal evaluasi model")
 
         base_date = datetime.strptime(region['date_now'], "%Y-%m-%d")
@@ -144,15 +133,15 @@ def predict_region(region: dict):
             pred_date = base_date + timedelta(days=day_offset)
 
             modified_input = base_input.copy()
-            modified_input[0][1] += 0.5 * day_offset
-            modified_input[0][4] += 0.2 * day_offset
-            modified_input[0][5] += 0.3 * day_offset
+            modified_input[0][1] += 0.5 * day_offset  # suhu
+            modified_input[0][4] += 0.2 * day_offset  # angin
+            modified_input[0][5] += 0.3 * day_offset  # dew point
 
             X_scaled_day = scaler.transform(modified_input)
             X_pca_day = pca.transform(X_scaled_day)
 
             pred_aqi = reg.predict(X_pca_day)[0]
-            pred_class = clf.predict(X_pca_day)[0]
+            pred_class = categorize(pred_aqi)
 
             predictions.append({
                 "date": pred_date.strftime("%Y-%m-%d"),
@@ -161,7 +150,7 @@ def predict_region(region: dict):
             })
 
         logger.info("Prediksi selesai untuk region %s", region['name'])
-        return {"region_id": region['id'], "predictions": predictions}
+        return {"region_id": region.get('id'), "predictions": predictions}
 
     except Exception as e:
         logger.exception("Terjadi kesalahan saat memproses region %s: %s", region.get('name'), str(e))

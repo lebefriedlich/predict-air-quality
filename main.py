@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.svm import SVC, SVR
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import classification_report, accuracy_score, mean_squared_error, r2_score
 import numpy as np
 from datetime import datetime, timedelta
@@ -51,6 +51,17 @@ def categorize(pm25) -> str:
     else:
         return "Berbahaya"
 
+def tune_svr(X, y):
+    param_grid = {
+        'C': [1, 10, 100],
+        'epsilon': [0.1, 0.2, 0.5],
+        'gamma': ['scale', 0.01, 0.1]
+    }
+    grid = GridSearchCV(SVR(kernel='rbf'), param_grid, scoring='r2', cv=3, n_jobs=-1)
+    grid.fit(X, y)
+    logger.info("Best SVR params: %s", grid.best_params_)
+    return grid.best_estimator_
+
 def evaluate_model(X, y_class, y_reg):
     try:
         logger.info("Memulai evaluasi model...")
@@ -67,15 +78,14 @@ def evaluate_model(X, y_class, y_reg):
         logger.info("Akurasi klasifikasi: %.2f%%", acc * 100)
         logger.info("Laporan klasifikasi:\n%s", classification_report(y_test_class, y_pred_class))
 
-        # Model regresi
-        reg = SVR(kernel='rbf')
-        reg.fit(X_train, y_train_reg)
+        # Model regresi dengan tuning
+        reg = tune_svr(X_train, y_train_reg)
         y_pred_reg = reg.predict(X_test)
         rmse = mean_squared_error(y_test_reg, y_pred_reg, squared=False)
         r2 = r2_score(y_test_reg, y_pred_reg)
         logger.info("RMSE regresi: %.4f", rmse)
         logger.info("R² regresi: %.4f", r2)
-        
+
         if r2 < 0.1:
             logger.warning("Model regresi R² terlalu rendah, prediksi mungkin tidak akurat.")
 
@@ -100,7 +110,7 @@ def predict_region(region: dict):
         for d in region.get('iaqi', [])
         if safe_float(d.get('pm25')) is not None
     ]
-    
+
     logger.info("Total data valid untuk region %s: %d", region.get('name'), len(iaqi_data))
 
     if len(iaqi_data) < 5:
@@ -117,9 +127,9 @@ def predict_region(region: dict):
 
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
-        pca = PCA(n_components=2)
+        pca = PCA(n_components=0.95)  # Menyimpan 95% informasi
         X_pca = pca.fit_transform(X_scaled)
-        logger.info("Explained variance ratio PCA: %s", pca.explained_variance_ratio_)
+        logger.info("Total explained variance by PCA: %.2f%%", pca.explained_variance_ratio_.sum() * 100)
 
         clf, reg = evaluate_model(X_pca, y_class, y_reg)
         if clf is None or reg is None:

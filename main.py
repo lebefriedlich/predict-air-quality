@@ -60,7 +60,7 @@ def evaluate_model(X, y_class, y_reg):
         )
 
         # Model klasifikasi
-        clf = SVC(kernel='rbf')
+        clf = SVC(kernel='rbf', class_weight='balanced')
         clf.fit(X_train, y_train_class)
         y_pred_class = clf.predict(X_test)
         acc = accuracy_score(y_test_class, y_pred_class)
@@ -75,6 +75,9 @@ def evaluate_model(X, y_class, y_reg):
         r2 = r2_score(y_test_reg, y_pred_reg)
         logger.info("RMSE regresi: %.4f", rmse)
         logger.info("R² regresi: %.4f", r2)
+        
+        if r2 < 0.1:
+            logger.warning("Model regresi R² terlalu rendah, prediksi mungkin tidak akurat.")
 
         return clf, reg
 
@@ -116,6 +119,7 @@ def predict_region(region: dict):
         X_scaled = scaler.fit_transform(X)
         pca = PCA(n_components=2)
         X_pca = pca.fit_transform(X_scaled)
+        logger.info("Explained variance ratio PCA: %s", pca.explained_variance_ratio_)
 
         clf, reg = evaluate_model(X_pca, y_class, y_reg)
         if clf is None or reg is None:

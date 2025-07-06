@@ -55,9 +55,9 @@ def categorize(pm25):
 def tune_svr(X, y):
     try:
         param_grid = {
-            'C': [1000, 2000, 3000, 4000, 5000],
+            'C': [1000],
             'epsilon': [0.1, 0.2],
-            'gamma': [0.001],
+            'gamma': [0.001, 0.01]
         }
 
         grid = GridSearchCV(

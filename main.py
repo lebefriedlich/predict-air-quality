@@ -57,7 +57,7 @@ def tune_svr(X, y):
         param_grid = {
             'C': [1000],
             'epsilon': [0.1, 0.2],
-            'gamma': [0.001, 0.01, 0.1, 1],
+            'gamma': [0.0005, 0.001, 0.005, 0.01],
         }
 
         grid = GridSearchCV(

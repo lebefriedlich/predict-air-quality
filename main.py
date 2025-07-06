@@ -53,22 +53,26 @@ def categorize(pm25):
 
 # Model tuning
 def tune_svr(X, y):
-    param_grid = {
-        'C': [1, 10, 100],
-        'epsilon': [0.1, 0.2, 0.5],
-        'gamma': ['scale', 0.01, 0.1]
-    }
+    try:
+        param_grid = {
+            'C': [100],
+            'epsilon': [0.1, 0.2],
+            'gamma': [0.01]
+        }
 
-    grid = GridSearchCV(
-        SVR(kernel='rbf'),
-        param_grid,
-        scoring='r2',
-        cv=3,
-        n_jobs=-1
-    )
-    grid.fit(X, y)
-    logger.info("Best SVR params: %s", grid.best_params_)
-    return grid.best_estimator_
+        grid = GridSearchCV(
+            SVR(kernel='rbf'),
+            param_grid,
+            scoring='r2',
+            cv=3,
+            n_jobs=1
+        )
+        grid.fit(X, y)
+        logger.info("Best SVR params: %s", grid.best_params_)
+        return grid.best_estimator_
+    except Exception as e:
+        logger.exception("GridSearchCV gagal: %s", str(e))
+        return SVR()
 
 def evaluate_model(X, y):
     try:

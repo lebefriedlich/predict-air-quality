@@ -4,11 +4,15 @@ from sklearn.decomposition import PCA
 from sklearn.svm import SVR
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.impute import SimpleImputer
+from sklearn.feature_selection import SelectKBest, f_regression
+import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import logging
 from logging.handlers import TimedRotatingFileHandler
 import os
+from statsmodels.stats.outliers_influence import variance_inflation_factor
 
 # Setup logging
 if not os.path.exists("logs"):
@@ -50,6 +54,18 @@ def categorize(pm25):
         return "Sangat Tidak Sehat"
     else:
         return "Berbahaya"
+
+def analyze_features(X_raw, y_raw):
+    df = pd.DataFrame(X_raw, columns=['pm25', 't', 'h', 'p', 'w', 'dew'])
+    df['target'] = y_raw
+
+    logger.info("Korelasi fitur terhadap target:\n%s", df.corr()['target'].drop('target').to_string())
+
+    X_df = df.drop(columns='target')
+    vif_data = pd.DataFrame()
+    vif_data["feature"] = X_df.columns
+    vif_data["VIF"] = [variance_inflation_factor(X_df.values, i) for i in range(X_df.shape[1])]
+    logger.info("VIF tiap fitur:\n%s", vif_data.to_string(index=False))
 
 # Model tuning
 def tune_svr(X, y):
@@ -114,14 +130,18 @@ def predict_region(region: dict):
         return {"region_id": region.get('id'), "error": "Data tidak cukup"}
 
     try:
-        X = [[d['pm25'], d['t'], d['h'], d['p'], d['w'], d['dew']] for d in iaqi_data]
-        y = [d['pm25'] for d in iaqi_data]
+        df = pd.DataFrame(iaqi_data)
+        imp = SimpleImputer(strategy='mean')
+        X = imp.fit_transform(df[['pm25', 't', 'h', 'p', 'w', 'dew']])
+        y = df['pm25'].values
 
-        if any(None in row for row in X):
-            raise ValueError("Terdapat nilai None dalam data fitur.")
+        analyze_features(X, y)
+
+        selector = SelectKBest(score_func=f_regression, k='all')
+        X_selected = selector.fit_transform(X, y)
 
         scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
+        X_scaled = scaler.fit_transform(X_selected)
         pca = PCA(n_components=0.95)
         X_pca = pca.fit_transform(X_scaled)
 
@@ -134,6 +154,8 @@ def predict_region(region: dict):
         base_date = datetime.strptime(region['date_now'], "%Y-%m-%d")
         last = iaqi_data[-1]
         base_input = np.array([[last['pm25'], last['t'], last['h'], last['p'], last['w'], last['dew']]])
+        base_input = imp.transform(base_input)  # Imputasi jika ada nilai kosong
+        base_input = selector.transform(base_input)
 
         predictions = []
         for day_offset in range(1, 4):

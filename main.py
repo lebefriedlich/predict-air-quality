@@ -133,7 +133,8 @@ def predict_region(region: dict):
         df = pd.DataFrame(iaqi_data)
         imp = SimpleImputer(strategy='mean')
         X = imp.fit_transform(df[['pm25', 't', 'h', 'p', 'w', 'dew']])
-        y = df['pm25'].values
+        y = df['pm25'].shift(-1).dropna().values
+        X = X[:-1]  # Align X with shifted y
 
         analyze_features(X, y)
 

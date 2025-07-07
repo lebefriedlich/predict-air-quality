@@ -93,7 +93,6 @@ def tune_svr(X, y):
 def evaluate_model(X, y):
     try:
         logger.info("Memulai evaluasi model...")
-        # Time-aware split: chronological order
         split_index = int(len(X) * 0.8)
         X_train, X_test = X[:split_index], X[split_index:]
         y_train, y_test = y[:split_index], y[split_index:]
@@ -121,11 +120,10 @@ def predict_region(region: dict):
             'h': safe_float(d.get('h')),
             'p': safe_float(d.get('p')),
             'w': safe_float(d.get('w')),
-            'dew': safe_float(d.get('dew')),
-            'observed_at': pd.to_datetime(d.get('observed_at'))
+            'dew': safe_float(d.get('dew'))
         }
         for d in region.get('iaqi', [])
-        if safe_float(d.get('pm25')) is not None and d.get('observed_at') is not None
+        if safe_float(d.get('pm25')) is not None
     ]
 
     logger.info("Total data valid untuk region %s: %d", region.get('name'), len(iaqi_data))
@@ -136,16 +134,10 @@ def predict_region(region: dict):
 
     try:
         df = pd.DataFrame(iaqi_data)
-        
-        df['hour'] = df['observed_at'].dt.hour
-        df['dayofweek'] = df['observed_at'].dt.dayofweek
-        df['month'] = df['observed_at'].dt.month
-        df['is_weekend'] = df['dayofweek'].apply(lambda x: 1 if x >= 5 else 0)
-
         imp = SimpleImputer(strategy='mean')
-        X_raw = imp.fit_transform(df[['t', 'h', 'p', 'w', 'dew', 'hour', 'dayofweek', 'month', 'is_weekend']])
+        X_raw = imp.fit_transform(df[['t', 'h', 'p', 'w', 'dew']])
         y = df['pm25'].shift(-1).dropna().values
-        X_raw = X_raw[:-1]  # align X with y
+        X_raw = X_raw[:-1]
 
         analyze_features(np.hstack([df[['pm25']].values[:-1], X_raw]), y)
 
@@ -164,7 +156,16 @@ def predict_region(region: dict):
             raise ValueError("Gagal evaluasi model")
 
         base_date = datetime.strptime(region['date_now'], "%Y-%m-%d")
-        last = iaqi_data[-1]
+
+        df_last = df.tail(24)
+        last = {
+            't': df_last['t'].mean(),
+            'h': df_last['h'].mean(),
+            'p': df_last['p'].mean(),
+            'w': df_last['w'].mean(),
+            'dew': df_last['dew'].mean()
+        }
+
         base_input = np.array([[last['t'], last['h'], last['p'], last['w'], last['dew']]])
         base_input = imp.transform(base_input)
         base_input = selector.transform(base_input)
@@ -177,9 +178,9 @@ def predict_region(region: dict):
         for day_offset in range(1, 4):
             pred_date = base_date + timedelta(days=day_offset)
             modified_raw = base_input.copy()
-            modified_raw[0][0] += delta_t * day_offset     # suhu
-            modified_raw[0][3] += delta_w * day_offset     # angin
-            modified_raw[0][4] += delta_dew * day_offset   # dew point
+            modified_raw[0][0] += delta_t * day_offset
+            modified_raw[0][3] += delta_w * day_offset
+            modified_raw[0][4] += delta_dew * day_offset
 
             X_scaled_day = scaler.transform(modified_raw)
             X_pca_day = pca.transform(X_scaled_day)

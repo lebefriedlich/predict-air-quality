@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.svm import SVR
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.impute import SimpleImputer
 from sklearn.feature_selection import SelectKBest, f_regression
@@ -93,7 +93,11 @@ def tune_svr(X, y):
 def evaluate_model(X, y):
     try:
         logger.info("Memulai evaluasi model...")
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        # Time-aware split: chronological order
+        split_index = int(len(X) * 0.8)
+        X_train, X_test = X[:split_index], X[split_index:]
+        y_train, y_test = y[:split_index], y[split_index:]
+
         model = tune_svr(X_train, y_train)
         y_pred = model.predict(X_test)
         rmse = mean_squared_error(y_test, y_pred, squared=False)
@@ -132,14 +136,14 @@ def predict_region(region: dict):
     try:
         df = pd.DataFrame(iaqi_data)
         imp = SimpleImputer(strategy='mean')
-        X = imp.fit_transform(df[['pm25', 't', 'h', 'p', 'w', 'dew']])
+        X_raw = imp.fit_transform(df[['t', 'h', 'p', 'w', 'dew']])  # without pm25 as input
         y = df['pm25'].shift(-1).dropna().values
-        X = X[:-1]  # Align X with shifted y
+        X_raw = X_raw[:-1]  # align X with y
 
-        analyze_features(X, y)
+        analyze_features(np.hstack([df[['pm25']].values[:-1], X_raw]), y)
 
         selector = SelectKBest(score_func=f_regression, k='all')
-        X_selected = selector.fit_transform(X, y)
+        X_selected = selector.fit_transform(X_raw, y)
 
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X_selected)
@@ -154,7 +158,7 @@ def predict_region(region: dict):
 
         base_date = datetime.strptime(region['date_now'], "%Y-%m-%d")
         last = iaqi_data[-1]
-        base_input = np.array([[last['pm25'], last['t'], last['h'], last['p'], last['w'], last['dew']]])
+        base_input = np.array([[last['t'], last['h'], last['p'], last['w'], last['dew']]])
         base_input = imp.transform(base_input)
         base_input = selector.transform(base_input)
 
@@ -166,9 +170,9 @@ def predict_region(region: dict):
         for day_offset in range(1, 4):
             pred_date = base_date + timedelta(days=day_offset)
             modified_raw = base_input.copy()
-            modified_raw[0][1] += delta_t * day_offset     # suhu
-            modified_raw[0][4] += delta_w * day_offset     # angin
-            modified_raw[0][5] += delta_dew * day_offset   # dew point
+            modified_raw[0][0] += delta_t * day_offset     # suhu
+            modified_raw[0][3] += delta_w * day_offset     # angin
+            modified_raw[0][4] += delta_dew * day_offset   # dew point
 
             X_scaled_day = scaler.transform(modified_raw)
             X_pca_day = pca.transform(X_scaled_day)

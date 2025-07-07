@@ -121,10 +121,11 @@ def predict_region(region: dict):
             'h': safe_float(d.get('h')),
             'p': safe_float(d.get('p')),
             'w': safe_float(d.get('w')),
-            'dew': safe_float(d.get('dew'))
+            'dew': safe_float(d.get('dew')),
+            'observed_at': pd.to_datetime(d.get('observed_at'))
         }
         for d in region.get('iaqi', [])
-        if safe_float(d.get('pm25')) is not None
+        if safe_float(d.get('pm25')) is not None and d.get('observed_at') is not None
     ]
 
     logger.info("Total data valid untuk region %s: %d", region.get('name'), len(iaqi_data))
@@ -135,8 +136,14 @@ def predict_region(region: dict):
 
     try:
         df = pd.DataFrame(iaqi_data)
+        
+        df['hour'] = df['observed_at'].dt.hour
+        df['dayofweek'] = df['observed_at'].dt.dayofweek
+        df['month'] = df['observed_at'].dt.month
+        df['is_weekend'] = df['dayofweek'].apply(lambda x: 1 if x >= 5 else 0)
+
         imp = SimpleImputer(strategy='mean')
-        X_raw = imp.fit_transform(df[['t', 'h', 'p', 'w', 'dew']])  # without pm25 as input
+        X_raw = imp.fit_transform(df[['t', 'h', 'p', 'w', 'dew', 'hour', 'dayofweek', 'month', 'is_weekend']])
         y = df['pm25'].shift(-1).dropna().values
         X_raw = X_raw[:-1]  # align X with y
 

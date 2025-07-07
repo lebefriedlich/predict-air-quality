@@ -154,18 +154,22 @@ def predict_region(region: dict):
         base_date = datetime.strptime(region['date_now'], "%Y-%m-%d")
         last = iaqi_data[-1]
         base_input = np.array([[last['pm25'], last['t'], last['h'], last['p'], last['w'], last['dew']]])
-        base_input = imp.transform(base_input)  # Imputasi jika ada nilai kosong
+        base_input = imp.transform(base_input)
         base_input = selector.transform(base_input)
+
+        delta_t = df['t'].diff().mean() if df['t'].count() > 1 else 0.5
+        delta_w = df['w'].diff().mean() if df['w'].count() > 1 else 0.2
+        delta_dew = df['dew'].diff().mean() if df['dew'].count() > 1 else 0.3
 
         predictions = []
         for day_offset in range(1, 4):
             pred_date = base_date + timedelta(days=day_offset)
-            modified_input = base_input.copy()
-            modified_input[0][1] += 0.5 * day_offset  # suhu
-            modified_input[0][4] += 0.2 * day_offset  # angin
-            modified_input[0][5] += 0.3 * day_offset  # dew point
+            modified_raw = base_input.copy()
+            modified_raw[0][1] += delta_t * day_offset     # suhu
+            modified_raw[0][4] += delta_w * day_offset     # angin
+            modified_raw[0][5] += delta_dew * day_offset   # dew point
 
-            X_scaled_day = scaler.transform(modified_input)
+            X_scaled_day = scaler.transform(modified_raw)
             X_pca_day = pca.transform(X_scaled_day)
 
             pred_aqi = reg.predict(X_pca_day)[0]

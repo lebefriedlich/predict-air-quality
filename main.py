@@ -5,7 +5,6 @@ from sklearn.svm import SVR
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.impute import SimpleImputer
-from sklearn.feature_selection import SelectKBest, f_regression
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -33,7 +32,6 @@ logger.addHandler(handler)
 
 app = Flask(__name__)
 
-# Util
 def safe_float(val):
     try:
         return float(val)
@@ -58,7 +56,6 @@ def categorize(pm25):
 def analyze_features(X_raw, y_raw):
     df = pd.DataFrame(X_raw, columns=['pm25', 't', 'h', 'p', 'w', 'dew'])
     df['target'] = y_raw
-
     logger.info("Korelasi fitur terhadap target:\n%s", df.corr()['target'].drop('target').to_string())
 
     X_df = df.drop(columns='target')
@@ -67,7 +64,21 @@ def analyze_features(X_raw, y_raw):
     vif_data["VIF"] = [variance_inflation_factor(X_df.values, i) for i in range(X_df.shape[1])]
     logger.info("VIF tiap fitur:\n%s", vif_data.to_string(index=False))
 
-# Model tuning
+def remove_high_vif_features(X_df, threshold=10.0):
+    while True:
+        vif_data = pd.DataFrame()
+        vif_data["feature"] = X_df.columns
+        vif_data["VIF"] = [variance_inflation_factor(X_df.values, i) for i in range(X_df.shape[1])]
+
+        max_vif = vif_data["VIF"].max()
+        if max_vif > threshold:
+            feature_to_drop = vif_data.loc[vif_data["VIF"].idxmax(), "feature"]
+            logger.info("Menghapus fitur dengan VIF tinggi: %s (VIF=%.2f)", feature_to_drop, max_vif)
+            X_df = X_df.drop(columns=[feature_to_drop])
+        else:
+            break
+    return X_df
+
 def tune_svr(X, y):
     try:
         param_grid = {
@@ -135,17 +146,16 @@ def predict_region(region: dict):
     try:
         df = pd.DataFrame(iaqi_data)
         imp = SimpleImputer(strategy='mean')
-        X_raw = imp.fit_transform(df[['t', 'h', 'p', 'w', 'dew']])
+        X_df_original = df[['t', 'h', 'p', 'w', 'dew']]
+        X_df_imputed = pd.DataFrame(imp.fit_transform(X_df_original), columns=X_df_original.columns)
+
         y = df['pm25'].shift(-1).dropna().values
-        X_raw = X_raw[:-1]
-
-        analyze_features(np.hstack([df[['pm25']].values[:-1], X_raw]), y)
-
-        selector = SelectKBest(score_func=f_regression, k='all')
-        X_selected = selector.fit_transform(X_raw, y)
+        analyze_features(np.hstack([df[['pm25']].values[:-1], X_df_imputed.values[:-1]]), y)
+        X_df_reduced = remove_high_vif_features(X_df_imputed)
+        X_raw = X_df_reduced.values[:-1]
 
         scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X_selected)
+        X_scaled = scaler.fit_transform(X_raw)
         pca = PCA(n_components=0.95)
         X_pca = pca.fit_transform(X_scaled)
 
@@ -156,19 +166,11 @@ def predict_region(region: dict):
             raise ValueError("Gagal evaluasi model")
 
         base_date = datetime.strptime(region['date_now'], "%Y-%m-%d")
-
         df_last = df.tail(24)
-        last = {
-            't': df_last['t'].mean(),
-            'h': df_last['h'].mean(),
-            'p': df_last['p'].mean(),
-            'w': df_last['w'].mean(),
-            'dew': df_last['dew'].mean()
-        }
+        last = {k: df_last[k].mean() for k in X_df_reduced.columns}
 
-        base_input = np.array([[last['t'], last['h'], last['p'], last['w'], last['dew']]])
-        base_input = imp.transform(base_input)
-        base_input = selector.transform(base_input)
+        base_input_df = pd.DataFrame([last])
+        base_input = imp.transform(base_input_df)
 
         delta_t = df['t'].diff().mean() if df['t'].count() > 1 else 0.5
         delta_w = df['w'].diff().mean() if df['w'].count() > 1 else 0.2
@@ -178,13 +180,16 @@ def predict_region(region: dict):
         for day_offset in range(1, 4):
             pred_date = base_date + timedelta(days=day_offset)
             modified_raw = base_input.copy()
-            modified_raw[0][0] += delta_t * day_offset
-            modified_raw[0][3] += delta_w * day_offset
-            modified_raw[0][4] += delta_dew * day_offset
+            for i, col in enumerate(X_df_reduced.columns):
+                if col == 't':
+                    modified_raw[0][i] += delta_t * day_offset
+                elif col == 'w':
+                    modified_raw[0][i] += delta_w * day_offset
+                elif col == 'dew':
+                    modified_raw[0][i] += delta_dew * day_offset
 
             X_scaled_day = scaler.transform(modified_raw)
             X_pca_day = pca.transform(X_scaled_day)
-
             pred_aqi = reg.predict(X_pca_day)[0]
             pred_class = categorize(pred_aqi)
 
@@ -201,7 +206,6 @@ def predict_region(region: dict):
         logger.exception("Terjadi kesalahan saat memproses region %s: %s", region.get('name'), str(e))
         return {"region_id": region.get('id'), "error": "Terjadi kesalahan saat prediksi"}
 
-# Routes
 @app.route("/")
 def index():
     return jsonify({"status": "API is running"})

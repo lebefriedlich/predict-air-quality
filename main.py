@@ -87,7 +87,14 @@ def tune_svr(X, y):
             'epsilon': [0.1, 0.2],
             'gamma': [0.001, 0.01]
         }
-        grid = GridSearchCV(SVR(kernel='rbf'), param_grid, scoring='r2', cv=3, n_jobs=1)
+
+        grid = GridSearchCV(
+            SVR(kernel='rbf'),
+            param_grid,
+            scoring='r2',
+            cv=3,
+            n_jobs=1
+        )
         grid.fit(X, y)
         logger.info("Best SVR params: %s", grid.best_params_)
         return grid.best_estimator_
@@ -119,8 +126,16 @@ def predict_region(region: dict):
     logger.info("Memproses region: %s", region.get('name'))
 
     iaqi_data = [
-        {k: safe_float(d.get(k)) for k in ['pm25', 't', 'h', 'p', 'w', 'dew']}
-        for d in region.get('iaqi', []) if safe_float(d.get('pm25')) is not None
+        {
+            'pm25': safe_float(d.get('pm25')),
+            't': safe_float(d.get('t')),
+            'h': safe_float(d.get('h')),
+            'p': safe_float(d.get('p')),
+            'w': safe_float(d.get('w')),
+            'dew': safe_float(d.get('dew'))
+        }
+        for d in region.get('iaqi', [])
+        if safe_float(d.get('pm25')) is not None
     ]
 
     logger.info("Total data valid untuk region %s: %d", region.get('name'), len(iaqi_data))
@@ -134,13 +149,10 @@ def predict_region(region: dict):
         X_df_original = df[['t', 'h', 'p', 'w', 'dew']]
         imp_initial = SimpleImputer(strategy='mean')
         X_df_imputed = pd.DataFrame(imp_initial.fit_transform(X_df_original), columns=X_df_original.columns)
-
         X_df_reduced = remove_high_vif_features(X_df_imputed)
 
-        imp_final = SimpleImputer(strategy='mean')  # Refit setelah reduksi fitur
+        imp_final = SimpleImputer(strategy='mean')
         X_df_reduced = pd.DataFrame(imp_final.fit_transform(X_df_reduced), columns=X_df_reduced.columns)
-
-        X_df_reduced = pd.DataFrame(imp.fit_transform(X_df_reduced), columns=X_df_reduced.columns)
 
         y = df['pm25'].shift(-1).dropna().values
         analyze_features(np.hstack([df[['pm25']].values[:-1], X_df_reduced.values[:-1]]), y)
@@ -148,8 +160,7 @@ def predict_region(region: dict):
 
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X_raw)
-
-        pca = PCA(n_components=min(0.95, X_scaled.shape[1]))
+        pca = PCA(n_components=0.95)
         X_pca = pca.fit_transform(X_scaled)
         logger.info("Total explained variance by PCA: %.2f%%", pca.explained_variance_ratio_.sum() * 100)
 
@@ -162,7 +173,7 @@ def predict_region(region: dict):
         last = {k: df_last[k].mean() for k in X_df_reduced.columns}
 
         base_input_df = pd.DataFrame([last])
-        base_input = imp.transform(base_input_df)
+        base_input = imp_final.transform(base_input_df)
 
         delta_t = df['t'].diff().mean() if df['t'].count() > 1 else 0.5
         delta_w = df['w'].diff().mean() if df['w'].count() > 1 else 0.2

@@ -2,16 +2,16 @@ from flask import Flask, request, jsonify
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.svm import SVR
-from sklearn.model_selection import GridSearchCV
-from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from sklearn.impute import SimpleImputer
-import pandas as pd
-import numpy as np
+from sklearn.feature_selection import RFE
+from sklearn.linear_model import LinearRegression
 from datetime import datetime, timedelta
+import numpy as np
 import logging
 from logging.handlers import TimedRotatingFileHandler
 import os
-from statsmodels.stats.outliers_influence import variance_inflation_factor
 
 # Setup logging
 if not os.path.exists("logs"):
@@ -32,6 +32,7 @@ logger.addHandler(handler)
 
 app = Flask(__name__)
 
+# Util
 def safe_float(val):
     try:
         return float(val)
@@ -53,74 +54,94 @@ def categorize(pm25):
     else:
         return "Berbahaya"
 
-def analyze_features(X_raw, y_raw):
-    df = pd.DataFrame(X_raw, columns=['pm25', 't', 'h', 'p', 'w', 'dew'])
-    df['target'] = y_raw
-    logger.info("Korelasi fitur terhadap target:\n%s", df.corr()['target'].drop('target').to_string())
+# Imputasi Missing Values
+def impute_missing_values(X):
+    imputer = SimpleImputer(strategy='mean')
+    return imputer.fit_transform(X)
 
-    X_df = df.drop(columns='target')
-    vif_data = pd.DataFrame()
-    vif_data["feature"] = X_df.columns
-    vif_data["VIF"] = [variance_inflation_factor(X_df.values, i) for i in range(X_df.shape[1])]
-    logger.info("VIF tiap fitur:\n%s", vif_data.to_string(index=False))
+# Penanganan Outliers menggunakan Isolation Forest
+def remove_outliers(X, y):
+    from sklearn.ensemble import IsolationForest
+    isolation_forest = IsolationForest(contamination=0.05)
+    outliers = isolation_forest.fit_predict(X)
+    
+    X_filtered = X[outliers == 1]
+    y_filtered = y[outliers == 1]
 
-def remove_high_vif_features(X_df, threshold=10.0):
-    while True:
-        vif_data = pd.DataFrame()
-        vif_data["feature"] = X_df.columns
-        vif_data["VIF"] = [variance_inflation_factor(X_df.values, i) for i in range(X_df.shape[1])]
+    if X_filtered.shape[0] != y_filtered.shape[0]:
+        logger.error(f"Jumlah sampel setelah penghilangan outliers tidak konsisten! ({X_filtered.shape[0]} vs {y_filtered.shape[0]})")
+        return None, None
+    
+    return X_filtered, y_filtered
 
-        max_vif = vif_data["VIF"].max()
-        if max_vif > threshold:
-            feature_to_drop = vif_data.loc[vif_data["VIF"].idxmax(), "feature"]
-            logger.info("Menghapus fitur dengan VIF tinggi: %s (VIF=%.2f)", feature_to_drop, max_vif)
-            X_df = X_df.drop(columns=[feature_to_drop])
-        else:
-            break
-    logger.info("Fitur setelah penghapusan VIF tinggi: %s", list(X_df.columns))
-    return X_df
+# Feature Selection menggunakan RFE
+def feature_selection(X, y):
+    model = LinearRegression()
+    selector = RFE(model, n_features_to_select=6)
+    selector = selector.fit(X, y)
+    return X[:, selector.support_]
 
-def tune_svr(X, y):
-    try:
-        param_grid = {
-            'C': [1000],
-            'epsilon': [0.1, 0.2],
-            'gamma': [0.001, 0.01]
+# Model tuning with GridSearchCV for SVR
+def tune_svr(X, y): 
+    try:   
+        param_dist = {
+            'C': [0.1, 1, 10, 100, 1000],
+            'epsilon': [0.01, 0.1, 0.2, 0.5],
+            'gamma': ['scale', 'auto', 0.001, 0.01],
+            'kernel': ['rbf', 'poly', 'sigmoid']
         }
-
-        grid = GridSearchCV(
-            SVR(kernel='rbf'),
-            param_grid,
-            scoring='r2',
-            cv=3,
-            n_jobs=1
-        )
-        grid.fit(X, y)
-        logger.info("Best SVR params: %s", grid.best_params_)
-        return grid.best_estimator_
+        
+        svr = SVR()
+        grid_search = GridSearchCV(svr, param_dist, cv=5, scoring='neg_mean_squared_error')
+        grid_search.fit(X, y)
+        
+        logger.info("Best SVR params: %s", grid_search.best_params_)
+        return grid_search.best_estimator_
     except Exception as e:
         logger.exception("GridSearchCV gagal: %s", str(e))
         return SVR()
 
+# Cross-validation for model evaluation
+def cross_validate_model(model, X, y):
+    scores = cross_val_score(model, X, y, cv=5, scoring='neg_mean_squared_error')
+    logger.info(f"Cross-validation scores: {scores}")
+    logger.info(f"Average CV score: {scores.mean()}")
+    return scores.mean()
+
+# Evaluate model with additional MAE, RMSE, and R²
 def evaluate_model(X, y):
-    try:
-        logger.info("Memulai evaluasi model...")
-        split_index = int(len(X) * 0.8)
-        X_train, X_test = X[:split_index], X[split_index:]
-        y_train, y_test = y[:split_index], y[split_index:]
+    logger.info("Memulai evaluasi model...")
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        model = tune_svr(X_train, y_train)
-        y_pred = model.predict(X_test)
-        rmse = mean_squared_error(y_test, y_pred, squared=False)
-        r2 = r2_score(y_test, y_pred)
+    # Imputasi missing values dan remove outliers
+    X_train_imputed = impute_missing_values(X_train)
+    X_train_no_outliers, y_train_no_outliers = remove_outliers(X_train_imputed, y_train)
 
-        logger.info("RMSE regresi: %.4f", rmse)
-        logger.info("R² regresi: %.4f", r2)
-
-        return model
-    except Exception as e:
-        logger.exception("Gagal evaluasi model: %s", str(e))
+    if X_train_no_outliers is None or y_train_no_outliers is None:
+        logger.error("Gagal menghapus outliers atau imputasi data.")
         return None
+    
+    model = tune_svr(X_train_no_outliers, y_train_no_outliers)
+
+    # Cross-validation
+    cross_validate_model(model, X_train_no_outliers, y_train_no_outliers)
+
+    r2_train = r2_score(y_train_no_outliers, model.predict(X_train_no_outliers))
+    logger.info(f"Train R²: {r2_train:.4f}")
+    
+    # Evaluasi model
+    y_pred = model.predict(X_test)
+    mae = mean_absolute_error(y_test, y_pred)
+    rmse = mean_squared_error(y_test, y_pred, squared=False)
+    r2 = r2_score(y_test, y_pred)
+    
+    logger.info(f"Test R²: {r2:.4f}")
+
+    logger.info(f"MAE: {mae:.4f}")
+    logger.info(f"RMSE: {rmse:.4f}")
+    logger.info(f"R²: {r2:.4f}")
+
+    return model
 
 def predict_region(region: dict):
     logger.info("Memproses region: %s", region.get('name'))
@@ -145,23 +166,21 @@ def predict_region(region: dict):
         return {"region_id": region.get('id'), "error": "Data tidak cukup"}
 
     try:
-        df = pd.DataFrame(iaqi_data)
-        X_df_original = df[['t', 'h', 'p', 'w', 'dew']]
-        imp_initial = SimpleImputer(strategy='mean')
-        X_df_imputed = pd.DataFrame(imp_initial.fit_transform(X_df_original), columns=X_df_original.columns)
-        X_df_reduced = remove_high_vif_features(X_df_imputed)
+        X = np.array([[d['pm25'], d['t'], d['h'], d['p'], d['w'], d['dew']] for d in iaqi_data])
+        y = np.array([d['pm25'] for d in iaqi_data])
 
-        imp_final = SimpleImputer(strategy='mean')
-        X_df_reduced = pd.DataFrame(imp_final.fit_transform(X_df_reduced), columns=X_df_reduced.columns)
+        # Memastikan panjang X dan y konsisten
+        if X.shape[0] != len(y):
+            logger.error("Jumlah sampel pada X dan y tidak konsisten!")
+            return {"region_id": region.get('id'), "error": "Jumlah sampel tidak konsisten"}
 
-        y = df['pm25'].shift(-1).dropna().values
-        analyze_features(np.hstack([df[['pm25']].values[:-1], X_df_reduced.values[:-1]]), y)
-        X_raw = X_df_reduced.values[:-1]
-
+        # Feature Selection dan PCA
+        X_selected = feature_selection(X, y)
         scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X_raw)
-        pca = PCA(n_components=0.95)
+        X_scaled = scaler.fit_transform(X_selected)
+        pca = PCA(n_components=4)
         X_pca = pca.fit_transform(X_scaled)
+
         logger.info("Total explained variance by PCA: %.2f%%", pca.explained_variance_ratio_.sum() * 100)
 
         reg = evaluate_model(X_pca, y)
@@ -169,38 +188,27 @@ def predict_region(region: dict):
             raise ValueError("Gagal evaluasi model")
 
         base_date = datetime.strptime(region['date_now'], "%Y-%m-%d")
-        df_last = df.tail(24)
-        last = {k: df_last[k].mean() for k in X_df_reduced.columns}
+        last = iaqi_data[-1]  # Ambil data terakhir yang ada (7 hari yang lalu)
+        base_input = np.array([[last['pm25'], last['t'], last['h'], last['p'], last['w'], last['dew']]])
 
-        base_input_df = pd.DataFrame([last])
-        base_input = imp_final.transform(base_input_df)
-
-        delta_t = df['t'].diff().mean() if df['t'].count() > 1 else 0.5
-        delta_w = df['w'].diff().mean() if df['w'].count() > 1 else 0.2
-        delta_dew = df['dew'].diff().mean() if df['dew'].count() > 1 else 0.3
+        # Pastikan fitur yang digunakan untuk prediksi sama dengan fitur yang digunakan untuk pelatihan
+        if base_input.shape[1] != X_selected.shape[1]:
+            logger.error(f"Jumlah fitur pada input prediksi ({base_input.shape[1]}) tidak sesuai dengan jumlah fitur pada pelatihan ({X_selected.shape[1]})")
+            return {"region_id": region.get('id'), "error": "Fitur tidak konsisten"}
 
         predictions = []
-        for day_offset in range(1, 4):
-            pred_date = base_date + timedelta(days=day_offset)
-            modified_raw = base_input.copy()
-            for i, col in enumerate(X_df_reduced.columns):
-                if col == 't':
-                    modified_raw[0][i] += delta_t * day_offset
-                elif col == 'w':
-                    modified_raw[0][i] += delta_w * day_offset
-                elif col == 'dew':
-                    modified_raw[0][i] += delta_dew * day_offset
+        pred_date = base_date + timedelta(days=1)  # Hanya 1 hari ke depan
 
-            X_scaled_day = scaler.transform(modified_raw)
-            X_pca_day = pca.transform(X_scaled_day)
-            pred_aqi = reg.predict(X_pca_day)[0]
-            pred_class = categorize(pred_aqi)
+        X_scaled_day = scaler.transform(base_input)
+        X_pca_day = pca.transform(X_scaled_day)
+        pred_aqi = reg.predict(X_pca_day)[0]
+        pred_class = categorize(pred_aqi)
 
-            predictions.append({
-                "date": pred_date.strftime("%Y-%m-%d"),
-                "predicted_aqi": round(pred_aqi, 2),
-                "predicted_category": pred_class
-            })
+        predictions.append({
+            "date": pred_date.strftime("%Y-%m-%d"),
+            "predicted_aqi": round(pred_aqi, 2),
+            "predicted_category": pred_class
+        })
 
         logger.info("Prediksi selesai untuk region %s", region['name'])
         return {"region_id": region.get('id'), "predictions": predictions}
@@ -209,6 +217,7 @@ def predict_region(region: dict):
         logger.exception("Terjadi kesalahan saat memproses region %s: %s", region.get('name'), str(e))
         return {"region_id": region.get('id'), "error": "Terjadi kesalahan saat prediksi"}
 
+# Routes
 @app.route("/")
 def index():
     return jsonify({"status": "API is running"})

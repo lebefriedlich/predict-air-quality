@@ -2,10 +2,13 @@ from flask import Flask, request, jsonify
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.svm import SVR
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.metrics import mean_squared_error, r2_score
-import numpy as np
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+from sklearn.impute import SimpleImputer
+from sklearn.feature_selection import RFE
+from sklearn.linear_model import LinearRegression
 from datetime import datetime, timedelta
+import numpy as np
 import logging
 from logging.handlers import TimedRotatingFileHandler
 import os
@@ -51,45 +54,94 @@ def categorize(pm25):
     else:
         return "Berbahaya"
 
-# Model tuning
-def tune_svr(X, y):
-    try:
-        param_grid = {
-            'C': [1000],
-            'epsilon': [0.1, 0.2],
-            'gamma': [0.001, 0.01]
-        }
+# Imputasi Missing Values
+def impute_missing_values(X):
+    imputer = SimpleImputer(strategy='mean')
+    return imputer.fit_transform(X)
 
-        grid = GridSearchCV(
-            SVR(kernel='rbf'),
-            param_grid,
-            scoring='r2',
-            cv=3,
-            n_jobs=1
-        )
-        grid.fit(X, y)
-        logger.info("Best SVR params: %s", grid.best_params_)
-        return grid.best_estimator_
+# Penanganan Outliers menggunakan Isolation Forest
+def remove_outliers(X, y):
+    from sklearn.ensemble import IsolationForest
+    isolation_forest = IsolationForest(contamination=0.05)
+    outliers = isolation_forest.fit_predict(X)
+    
+    X_filtered = X[outliers == 1]
+    y_filtered = y[outliers == 1]
+
+    if X_filtered.shape[0] != y_filtered.shape[0]:
+        logger.error(f"Jumlah sampel setelah penghilangan outliers tidak konsisten! ({X_filtered.shape[0]} vs {y_filtered.shape[0]})")
+        return None, None
+    
+    return X_filtered, y_filtered
+
+# Feature Selection menggunakan RFE
+def feature_selection(X, y):
+    model = LinearRegression()
+    selector = RFE(model, n_features_to_select=6)
+    selector = selector.fit(X, y)
+    return X[:, selector.support_]
+
+# Model tuning with GridSearchCV for SVR
+def tune_svr(X, y): 
+    try:   
+        param_dist = {
+            'C': [0.1, 1, 10, 100, 1000],
+            'epsilon': [0.01, 0.1, 0.2, 0.5],
+            'gamma': ['scale', 'auto', 0.001, 0.01],
+            'kernel': ['rbf', 'poly', 'sigmoid']
+        }
+        
+        svr = SVR()
+        grid_search = GridSearchCV(svr, param_dist, cv=5, scoring='neg_mean_squared_error')
+        grid_search.fit(X, y)
+        
+        logger.info("Best SVR params: %s", grid_search.best_params_)
+        return grid_search.best_estimator_
     except Exception as e:
         logger.exception("GridSearchCV gagal: %s", str(e))
         return SVR()
 
+# Cross-validation for model evaluation
+def cross_validate_model(model, X, y):
+    scores = cross_val_score(model, X, y, cv=5, scoring='neg_mean_squared_error')
+    logger.info(f"Cross-validation scores: {scores}")
+    logger.info(f"Average CV score: {scores.mean()}")
+    return scores.mean()
+
+# Evaluate model with additional MAE, RMSE, and R²
 def evaluate_model(X, y):
-    try:
-        logger.info("Memulai evaluasi model...")
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        model = tune_svr(X_train, y_train)
-        y_pred = model.predict(X_test)
-        rmse = mean_squared_error(y_test, y_pred, squared=False)
-        r2 = r2_score(y_test, y_pred)
+    logger.info("Memulai evaluasi model...")
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        logger.info("RMSE regresi: %.4f", rmse)
-        logger.info("R² regresi: %.4f", r2)
+    # Imputasi missing values dan remove outliers
+    X_train_imputed = impute_missing_values(X_train)
+    X_train_no_outliers, y_train_no_outliers = remove_outliers(X_train_imputed, y_train)
 
-        return model
-    except Exception as e:
-        logger.exception("Gagal evaluasi model: %s", str(e))
+    if X_train_no_outliers is None or y_train_no_outliers is None:
+        logger.error("Gagal menghapus outliers atau imputasi data.")
         return None
+    
+    model = tune_svr(X_train_no_outliers, y_train_no_outliers)
+
+    # Cross-validation
+    cross_validate_model(model, X_train_no_outliers, y_train_no_outliers)
+
+    r2_train = r2_score(y_train_no_outliers, model.predict(X_train_no_outliers))
+    logger.info(f"Train R²: {r2_train:.4f}")
+    
+    # Evaluasi model
+    y_pred = model.predict(X_test)
+    mae = mean_absolute_error(y_test, y_pred)
+    rmse = mean_squared_error(y_test, y_pred, squared=False)
+    r2 = r2_score(y_test, y_pred)
+    
+    logger.info(f"Test R²: {r2:.4f}")
+
+    logger.info(f"MAE: {mae:.4f}")
+    logger.info(f"RMSE: {rmse:.4f}")
+    logger.info(f"R²: {r2:.4f}")
+
+    return model
 
 def predict_region(region: dict):
     logger.info("Memproses region: %s", region.get('name'))
@@ -114,15 +166,19 @@ def predict_region(region: dict):
         return {"region_id": region.get('id'), "error": "Data tidak cukup"}
 
     try:
-        X = [[d['pm25'], d['t'], d['h'], d['p'], d['w'], d['dew']] for d in iaqi_data]
-        y = [d['pm25'] for d in iaqi_data]
+        X = np.array([[d['pm25'], d['t'], d['h'], d['p'], d['w'], d['dew']] for d in iaqi_data])
+        y = np.array([d['pm25'] for d in iaqi_data])
 
-        if any(None in row for row in X):
-            raise ValueError("Terdapat nilai None dalam data fitur.")
+        # Memastikan panjang X dan y konsisten
+        if X.shape[0] != len(y):
+            logger.error("Jumlah sampel pada X dan y tidak konsisten!")
+            return {"region_id": region.get('id'), "error": "Jumlah sampel tidak konsisten"}
 
+        # Feature Selection dan PCA
+        X_selected = feature_selection(X, y)
         scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        pca = PCA(n_components=0.95)
+        X_scaled = scaler.fit_transform(X_selected)
+        pca = PCA(n_components=4)
         X_pca = pca.fit_transform(X_scaled)
 
         logger.info("Total explained variance by PCA: %.2f%%", pca.explained_variance_ratio_.sum() * 100)
@@ -132,28 +188,27 @@ def predict_region(region: dict):
             raise ValueError("Gagal evaluasi model")
 
         base_date = datetime.strptime(region['date_now'], "%Y-%m-%d")
-        last = iaqi_data[-1]
+        last = iaqi_data[-1]  # Ambil data terakhir yang ada (7 hari yang lalu)
         base_input = np.array([[last['pm25'], last['t'], last['h'], last['p'], last['w'], last['dew']]])
 
+        # Pastikan fitur yang digunakan untuk prediksi sama dengan fitur yang digunakan untuk pelatihan
+        if base_input.shape[1] != X_selected.shape[1]:
+            logger.error(f"Jumlah fitur pada input prediksi ({base_input.shape[1]}) tidak sesuai dengan jumlah fitur pada pelatihan ({X_selected.shape[1]})")
+            return {"region_id": region.get('id'), "error": "Fitur tidak konsisten"}
+
         predictions = []
-        for day_offset in range(1, 4):
-            pred_date = base_date + timedelta(days=day_offset)
-            modified_input = base_input.copy()
-            modified_input[0][1] += 0.5 * day_offset  # suhu
-            modified_input[0][4] += 0.2 * day_offset  # angin
-            modified_input[0][5] += 0.3 * day_offset  # dew point
+        pred_date = base_date + timedelta(days=1)  # Hanya 1 hari ke depan
 
-            X_scaled_day = scaler.transform(modified_input)
-            X_pca_day = pca.transform(X_scaled_day)
+        X_scaled_day = scaler.transform(base_input)
+        X_pca_day = pca.transform(X_scaled_day)
+        pred_aqi = reg.predict(X_pca_day)[0]
+        pred_class = categorize(pred_aqi)
 
-            pred_aqi = reg.predict(X_pca_day)[0]
-            pred_class = categorize(pred_aqi)
-
-            predictions.append({
-                "date": pred_date.strftime("%Y-%m-%d"),
-                "predicted_aqi": round(pred_aqi, 2),
-                "predicted_category": pred_class
-            })
+        predictions.append({
+            "date": pred_date.strftime("%Y-%m-%d"),
+            "predicted_aqi": round(pred_aqi, 2),
+            "predicted_category": pred_class
+        })
 
         logger.info("Prediksi selesai untuk region %s", region['name'])
         return {"region_id": region.get('id'), "predictions": predictions}

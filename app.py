@@ -101,33 +101,27 @@ def preprocess_pipeline(X, y, fit=True):
             else:
                 X_scaled = X_selected
         
-        # Step 6: PCA yang disederhanakan (hanya jika fitur > 10)
+        # Step 6: PCA (selalu dijalankan untuk keperluan skripsi)
         if fit:
-            # Hanya gunakan PCA jika fitur terlalu banyak untuk mengurangi overfitting
-            if X_scaled.shape[1] > 10:
-                try:
-                    # Gunakan threshold variance yang lebih konservatif (85%)
-                    pca_temp = PCA()
-                    pca_temp.fit(X_scaled)
-                    cumsum_var = np.cumsum(pca_temp.explained_variance_ratio_)
-                    n_components = np.argmax(cumsum_var >= 0.85) + 1
-                    n_components = max(3, min(n_components, min(10, X_scaled.shape[1] - 1)))
-                    
-                    global_pca = PCA(n_components=n_components)
-                    X_pca = global_pca.fit_transform(X_scaled)
-                    
-                    logger.info(f"PCA: {X_scaled.shape[1]} -> {n_components} komponen")
-                    logger.info(f"Total explained variance: {global_pca.explained_variance_ratio_.sum():.3f}")
-                    logger.info(f"Final processed data: X={X_pca.shape}, y={len(y_clean) if y_clean is not None else 'None'}")
-                    
-                    return X_pca, y_clean
-                except Exception as e:
-                    logger.error(f"PCA gagal: {str(e)}, menggunakan data tanpa PCA")
-                    global_pca = None
-                    return X_scaled, y_clean
-            else:
-                # Skip PCA untuk dataset kecil
-                logger.info(f"Skip PCA (fitur < 10): X={X_scaled.shape}")
+            try:
+                # Gunakan threshold variance yang lebih konservatif (85%)
+                pca_temp = PCA()
+                pca_temp.fit(X_scaled)
+                cumsum_var = np.cumsum(pca_temp.explained_variance_ratio_)
+                n_components = np.argmax(cumsum_var >= 0.85) + 1
+                # Pastikan n_components minimal 2 dan maksimal fitur-1
+                n_components = max(2, min(n_components, X_scaled.shape[1] - 1))
+                
+                global_pca = PCA(n_components=n_components)
+                X_pca = global_pca.fit_transform(X_scaled)
+                
+                logger.info(f"PCA: {X_scaled.shape[1]} -> {n_components} komponen")
+                logger.info(f"Total explained variance: {global_pca.explained_variance_ratio_.sum():.3f}")
+                logger.info(f"Final processed data: X={X_pca.shape}, y={len(y_clean) if y_clean is not None else 'None'}")
+                
+                return X_pca, y_clean
+            except Exception as e:
+                logger.error(f"PCA gagal: {str(e)}, menggunakan data tanpa PCA")
                 global_pca = None
                 return X_scaled, y_clean
         else:

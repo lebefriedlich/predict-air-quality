@@ -452,6 +452,3 @@ def predict_single_region():
     except Exception as e:
         logger.exception(f"Error /predict-single-region: {e}")
         return jsonify({"error": f"Terjadi kesalahan: {str(e)}"}), 500
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=False)

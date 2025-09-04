@@ -70,7 +70,7 @@ def safe_float(x):
 os.makedirs("logs", exist_ok=True)
 logger = logging.getLogger("flask_logger")
 logger.setLevel(logging.INFO)
-handler = TimedRotatingFileHandler("logs/flask_app.log", when="midnight", interval=1, backupCount=7, encoding="utf-8")
+handler = TimedRotatingFileHandler("logs/flask_app.log", when="midnight", interval=1, backupCount=0, encoding="utf-8")
 handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"))
 logger.addHandler(handler)
 

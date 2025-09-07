@@ -65,6 +65,50 @@ def safe_float(x):
     except (TypeError, ValueError): return None
 
 # =========================
+# ISPU RI PM2.5 (Permen LHK P.14/2020)
+# =========================
+# Tabel konversi 24 jam PM2.5 (µg/m3) -> ISPU, piecewise linear
+# Rentang konsentrasi mengikuti Lampiran I; indeks & kategori Lampiran II.
+PM25_BREAKPOINTS_ISPU = [
+    (0.0,   15.5,   0,   50),
+    (15.6,  55.4,  51,  100),
+    (55.5, 150.4, 101,  200),
+    (150.5,250.4, 201,  300),
+    (250.5,500.0, 301,  500),
+]
+ISPU_CATEGORIES = [
+    (1,   50,  "Baik"),
+    (51, 100,  "Sedang"),
+    (101,200,  "Tidak Sehat"),
+    (201,300,  "Sangat Tidak Sehat"),
+    (301,500,  "Berbahaya"),
+]
+
+def ispu_from_pm25(pm25: float):
+    """Konversi konsentrasi PM2.5 (µg/m³, 24 jam) ke ISPU (0–500) sesuai Permen LHK P.14/2020."""
+    if pm25 is None or (isinstance(pm25, float) and np.isnan(pm25)): 
+        return None
+    pm25 = float(pm25)
+    for Clow, Chigh, Ilow, Ihigh in PM25_BREAKPOINTS_ISPU:
+        if Clow <= pm25 <= Chigh:
+            # linear interpolation seperti rumus Lampiran I
+            I = (Ihigh-Ilow)/(Chigh-Clow) * (pm25 - Clow) + Ilow
+            return float(I)
+    return 500.0  # di atas rentang tertinggi
+
+def categorize_ispu(ispu_value: float):
+    if ispu_value is None or (isinstance(ispu_value, float) and np.isnan(ispu_value)):
+        return "Tidak Diketahui"
+    ispu_value = float(ispu_value)
+    # ISPU resmi pakai 1–50, 51–100, dst; nol kita treat sebagai 'Baik'
+    for lo, hi, label in ISPU_CATEGORIES:
+        if lo <= ispu_value <= hi:
+            return label
+    if 0 <= ispu_value < 1:
+        return "Baik"
+    return "Berbahaya"
+
+# =========================
 # Logging
 # =========================
 os.makedirs("logs", exist_ok=True)
@@ -402,15 +446,26 @@ def predict_region_h1(region: dict):
     pred_t = float(bundle["model"].predict(x_inf)[0])
     pm25_pred = float(bundle["tt"].inverse([pred_t])[0])  # balik ke µg/m³
     pm25_pred = max(0.0, pm25_pred)
-    aqi_pred = float(round(aqi_from_pm25(pm25_pred), 2))
-    cat = categorize_aqi(aqi_pred)
+
+    # US EPA (tetap untuk backward-compat)
+    aqi_pred_us = float(round(aqi_from_pm25(pm25_pred), 2))
+    cat_us = categorize_aqi(aqi_pred_us)
+
+    # ISPU RI (Permen LHK P.14/2020) — direkomendasikan pakai agregasi 24 jam (1D)
+    ispu_val = ispu_from_pm25(pm25_pred)
+    # Permen mencontohkan pembulatan ke bilangan bulat
+    ispu_val_rounded = int(round(ispu_val)) if ispu_val is not None else None
+    cat_ispu = categorize_ispu(ispu_val_rounded)
+
     pred_date_local = (base_date_local + timedelta(days=HORIZON)).date().isoformat()
 
     predictions = [{
         "date_local": pred_date_local,
         "predicted_pm25": round(pm25_pred, 2),
-        "predicted_aqi": aqi_pred,
-        "predicted_category": cat,
+        "predicted_aqi": aqi_pred_us,
+        "predicted_category": cat_us,
+        "predicted_ispu": ispu_val_rounded,
+        "predicted_category_ispu": cat_ispu,
         "horizon_day": HORIZON,
         "cv_metrics_svr": bundle["cv_metrics_svr"],        # metrik SVR (skala asli)
         "cv_metrics_baseline": bundle["cv_metrics_baseline"]# pembanding baseline

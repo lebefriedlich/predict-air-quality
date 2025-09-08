@@ -1,4 +1,8 @@
-# app.py — Prediksi IAQI PM2.5 H+1 dengan SVR (tanpa fallback), baseline hanya pembanding
+# app.py — Prediksi IAQI PM2.5 H+1 dengan SVR (tanpa fallback)
+# - Target: IAQI PM2.5 (0–500)
+# - Tambahan: Estimasi konsentrasi (µg/m³) via inverse US-EPA + ISPU (Permen LHK P.14/2020)
+# - Waktu: lokal naive dari time.s (tanpa ISO/TZ/UTC)
+# - Baseline: persistence (untuk pembanding di laporan), tidak dipakai sebagai fallback
 
 from flask import Flask, request, jsonify
 from sklearn.preprocessing import RobustScaler, PowerTransformer
@@ -26,9 +30,18 @@ MIN_SAMPLES_BASE = 20          # minimal sampel setelah fitur jadi
 TIME_COL_CANDIDATES = ["observed_at", "time", "timestamp", "datetime", "date", "created_at", "updated_at", "ts"]
 
 # =========================
-# Kategori IAQI PM2.5 (0–500)
+# Breakpoints US EPA PM2.5 (µg/m³) <-> AQI 0–500 + kategori
 # =========================
-AQI_CATEGORIES = [
+PM25_BREAKPOINTS_US = [
+    (0.0, 12.0,    0,  50),
+    (12.1, 35.4,  51, 100),
+    (35.5, 55.4, 101, 150),
+    (55.5,150.4, 151, 200),
+    (150.5,250.4,201, 300),
+    (250.5,350.4,301, 400),
+    (350.5,500.4,401, 500),
+]
+AQI_CATEGORIES_US = [
     (0, 50,   "Baik"),
     (51,100,  "Sedang"),
     (101,150, "Tidak Sehat bagi Kelompok Sensitif"),
@@ -37,13 +50,56 @@ AQI_CATEGORIES = [
     (301,500, "Berbahaya"),
 ]
 
-def categorize_iaqi(aqi_val: float):
-    if aqi_val is None or (isinstance(aqi_val, float) and np.isnan(aqi_val)):
-        return "Tidak Diketahui"
-    aqi_val = float(aqi_val)
-    for lo, hi, label in AQI_CATEGORIES:
-        if lo <= aqi_val <= hi:
-            return label
+def categorize_aqi_us(aqi: float):
+    if aqi is None or (isinstance(aqi, float) and np.isnan(aqi)): return "Tidak Diketahui"
+    aqi = float(aqi)
+    for lo, hi, label in AQI_CATEGORIES_US:
+        if lo <= aqi <= hi: return label
+    return "Berbahaya"
+
+def pm25_from_aqi_us(aqi: float):
+    """Inverse US EPA: estimasi konsentrasi PM2.5 (µg/m³) dari AQI 0–500."""
+    if aqi is None or (isinstance(aqi, float) and np.isnan(aqi)): return None
+    aqi = float(np.clip(aqi, 0.0, 500.0))
+    for Clow, Chigh, Ilow, Ihigh in PM25_BREAKPOINTS_US:
+        if Ilow <= aqi <= Ihigh:
+            # C = (C_hi - C_lo)/(I_hi - I_lo) * (AQI - I_lo) + C_lo
+            return (Chigh - Clow) / (Ihigh - Ilow) * (aqi - Ilow) + Clow
+    return PM25_BREAKPOINTS_US[-1][1]
+
+# =========================
+# ISPU RI PM2.5 (Permen LHK P.14/2020) dari konsentrasi 24 jam (µg/m³)
+# =========================
+PM25_BREAKPOINTS_ISPU = [
+    (0.0,   15.5,   0,   50),
+    (15.6,  55.4,  51,  100),
+    (55.5, 150.4, 101,  200),
+    (150.5,250.4, 201,  300),
+    (250.5,500.0, 301,  500),
+]
+ISPU_CATEGORIES = [
+    (1,   50,  "Baik"),
+    (51, 100,  "Sedang"),
+    (101,200,  "Tidak Sehat"),
+    (201,300,  "Sangat Tidak Sehat"),
+    (301,500,  "Berbahaya"),
+]
+
+def ispu_from_pm25_24h(pm25_ugm3: float):
+    """Konversi konsentrasi PM2.5 24 jam (µg/m³) → ISPU 0–500."""
+    if pm25_ugm3 is None or (isinstance(pm25_ugm3, float) and np.isnan(pm25_ugm3)): return None
+    x = float(pm25_ugm3)
+    for Clow, Chigh, Ilow, Ihigh in PM25_BREAKPOINTS_ISPU:
+        if Clow <= x <= Chigh:
+            return (Ihigh - Ilow) / (Chigh - Clow) * (x - Clow) + Ilow
+    return 500.0
+
+def categorize_ispu(v: float):
+    if v is None or (isinstance(v, float) and np.isnan(v)): return "Tidak Diketahui"
+    v = float(v)
+    for lo, hi, label in ISPU_CATEGORIES:
+        if lo <= v <= hi: return label
+    if 0 <= v < 1: return "Baik"
     return "Berbahaya"
 
 def safe_float(x):
@@ -138,7 +194,7 @@ def add_time_features(df: pd.DataFrame):
     else:
         ts = out["ts"]
         out["ts_local"] = ts
-        
+
     out["hour"] = ts.dt.hour
     out["dow"] = ts.dt.dayofweek
     out["hour_sin"] = np.sin(2 * np.pi * out["hour"] / 24.0)
@@ -179,7 +235,10 @@ def make_supervised(df: pd.DataFrame, target_col="pm25", lags=None, rolls=None, 
         for W in rolls:
             df[f"{col}_rmean{W}"] = df[col].rolling(W).mean()
 
+    # Target H+1
     df[f"{target_col}_tplus{horizon}"] = df[target_col].shift(-horizon)
+
+    # Drop NA, tambahkan fitur waktu
     df = df.dropna().reset_index(drop=True)
     df = add_time_features(df)
 
@@ -307,6 +366,7 @@ def train_model_h1(df):
 
     scaler = RobustScaler()
     Xs = scaler.fit_transform(X)
+
     Xsel, selector, sel_names = select_features_kbest(Xs, y, feat_names, k=None)
 
     # Transform target IAQI
@@ -382,6 +442,7 @@ def predict_region_h1(region: dict):
     df = df_agg
     base_date_local = df["ts_local"].iloc[-1].normalize()
 
+    # Train
     try:
         bundle = train_model_h1(df)
     except Exception as e:
@@ -405,15 +466,33 @@ def predict_region_h1(region: dict):
     pred_t = float(bundle["model"].predict(x_inf)[0])
     iaqi_pred = float(bundle["tt"].inverse([pred_t])[0])   # balik ke skala IAQI 0–500
     iaqi_pred = float(np.clip(iaqi_pred, 0.0, 500.0))
-    cat = categorize_iaqi(iaqi_pred)
+
+    # US-EPA (IAQI style 0–500) — kategori
+    aqi_us = round(iaqi_pred, 0)
+    cat_us = categorize_aqi_us(aqi_us)
+
+    # Estimasi konsentrasi (µg/m³) via inverse US-EPA → ISPU estimasi
+    pm25_est_ugm3 = pm25_from_aqi_us(aqi_us)
+    ispu_est = ispu_from_pm25_24h(pm25_est_ugm3)
+    ispu_est_rounded = int(round(ispu_est)) if ispu_est is not None else None
+    cat_ispu = categorize_ispu(ispu_est_rounded)
 
     pred_date_local = (base_date_local + timedelta(days=HORIZON)).date().isoformat()
 
     predictions = [{
         "date_local": pred_date_local,
-        "predicted_iaqi_pm25": round(iaqi_pred, 0),
-        "predicted_category": cat,
         "horizon_day": HORIZON,
+
+        # Target utama (hasil model)
+        "predicted_iaqi_pm25": float(aqi_us),
+        "predicted_category_us": cat_us,
+
+        # Turunan estimasi untuk pelaporan
+        "estimated_pm25_ugm3_from_aqi_us": None if pm25_est_ugm3 is None else round(float(pm25_est_ugm3), 1),
+        "predicted_ispu_estimated": ispu_est_rounded,
+        "predicted_category_ispu_estimated": cat_ispu,
+
+        # Metrik CV (skala IAQI asli)
         "cv_metrics_svr": bundle["cv_metrics_svr"],
         "cv_metrics_baseline": bundle["cv_metrics_baseline"]
     }]

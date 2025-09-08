@@ -301,7 +301,7 @@ def tune_svr_grid(X, y_t):
     splits = choose_cv_splits(len(y_t))
     tscv = TimeSeriesSplit(n_splits=splits)
     svr = SVR()
-    gs = GridSearchCV(svr, params, cv=tscv, scoring="neg_mean_squared_error", n_jobs=-1, verbose=0)
+    gs = GridSearchCV(svr, params, cv=tscv, scoring="neg_mean_squared_error", n_jobs=1, verbose=0)
     gs.fit(X, y_t)  # grid tanpa bobot
     logger.info(f"SVR best params (splits={splits}): {gs.best_params_}; best MSE: {-gs.best_score_:.4f}")
     return gs.best_estimator_, splits

@@ -13,6 +13,9 @@ import pandas as pd
 from datetime import datetime, timedelta
 import pytz, logging, os, warnings
 from logging.handlers import TimedRotatingFileHandler
+from dotenv import load_dotenv
+
+load_dotenv()  # load .env jika ada
 
 warnings.filterwarnings("ignore")
 
@@ -492,11 +495,26 @@ def predict_region_h1(region: dict):
 # =========================
 # Routes
 # =========================
+
+API_KEY = os.getenv("API_KEY")  # ambil dari .env
+
+def require_api_key(f):
+    from functools import wraps
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        key = request.headers.get("x-api-key")
+        if key != API_KEY:
+            return jsonify({"error": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
 @app.route("/")
+@require_api_key
 def index():
     return jsonify({"status": "API is running"})
 
 @app.route("/predict-single-region", methods=["POST"])
+@require_api_key
 def predict_single_region():
     try:
         data = request.get_json()

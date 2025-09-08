@@ -2,3 +2,4 @@ __pycache__
 logs
 app.wsgi
 passenger_wsgi.py
+.env

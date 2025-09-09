@@ -479,7 +479,7 @@ def predict_region_h1(region: dict):
 
     pred_date_local = (base_date_local + timedelta(days=HORIZON)).date().isoformat()
 
-    predictions = [{
+    predictions = {
         "date_local": pred_date_local,
         "horizon_day": HORIZON,
 
@@ -495,7 +495,7 @@ def predict_region_h1(region: dict):
         # Metrik CV (skala IAQI asli)
         "cv_metrics_svr": bundle["cv_metrics_svr"],
         "cv_metrics_baseline": bundle["cv_metrics_baseline"]
-    }]
+    }
 
     model_info = {
         "model_type": "SVR (rbf) — SVR-only (target: IAQI PM2.5)",
